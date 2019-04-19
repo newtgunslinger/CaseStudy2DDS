@@ -1,0 +1,484 @@
+---
+title: "CaseStudy2DDS"
+author: "Blaine Brewer"
+date: "April 18, 2019"
+output: html_document
+---
+
+link to the youtube presentation: https://youtu.be/1fHFSlSYd2E
+
+```{r, echo=F}
+library(RCurl)
+library(caret)
+library(glmnet)
+library(corrplot)
+library(car)
+library(ROCR)
+library(e1071)
+library(randomForest)
+library(plyr)
+library(dplyr)
+```
+
+Importing Data
+```{r}
+# download.file('https://raw.githubusercontent.com/newtgunslinger/MSDS-6306-Doing-Data-Science/master/UNIT%2014/CaseStudy2-data.csv', destfile = "CaseStudyData_Income.csv", method = "curl")
+income.df <- read.csv('CaseStudyData_Income.csv')
+head(income.df)
+
+# download.file('https://raw.githubusercontent.com/newtgunslinger/MSDS-6306-Doing-Data-Science/master/UNIT%2014/CaseStudy2Validation%20No%20Attrition.csv', destfile = "CaseStudyData_ValNoAttrition.csv", method = "curl")
+no.attrition.df <- read.csv('CaseStudyData_ValNoAttrition.csv')
+head(no.attrition.df)
+
+no.salary.df <- read.csv("CaseStudy2Validation No Salary.csv")
+head(no.salary.df)
+```
+
+Exploratory Data Analysis
+```{r}
+dim(income.df)
+dim(no.attrition.df)
+
+summary(income.df)
+str(income.df)
+```
+how many levels are available with employee count and over18
+```{r}
+unique(income.df$EmployeeCount)
+unique(income.df$Over18)
+```
+
+drop employee count, employee number, Over 18, standard hours, id and the random variable from the analysis
+```{r}
+income.df$EmployeeCount = NULL
+income.df$EmployeeNumber = NULL
+income.df$Over18 = NULL
+income.df$StandardHours = NULL
+income.df$ID = NULL
+income.df$Rand = NULL
+```
+
+check for NAs
+```{r}
+check.na <- as.data.frame(sapply(income.df, function(x) {sum(is.na(x))}))
+names(check.na) <- ""
+check.na
+```
+
+check for multicolinearity
+```{r}
+# check for multicoliniarity
+str(income.df)
+
+var.class <- sapply(income.df, class)
+var.class %in% c("integer","numeric")
+cont.class <- var.class %in% c("integer","numeric")
+cont.var <- names(income.df)[cont.class]
+cont.var
+
+var.class
+cat.df <- income.df[,!(names(income.df) %in% cont.var)]
+table(cat.df$BusinessTravel, cat.df$Attrition)
+table(cat.df$Department, cat.df$Attrition)
+table(cat.df$EducationField, cat.df$Attrition)
+table(cat.df$Gender, cat.df$Attrition)
+table(cat.df$MaritalStatus, cat.df$Attrition)
+table(cat.df$OverTime, cat.df$Attrition)
+
+cont.income <- income.df[,cont.var]
+
+#Checking for collinearity
+corrplot(cor(cont.income), tl.cex = 0.6)
+
+job.level.cor <- as.data.frame(cor(cont.income)["JobLevel",])
+names(job.level.cor) <- "Correlation"
+job.level.cor <- data.frame(Variable=row.names(job.level.cor), Correlation = job.level.cor)
+head(job.level.cor)
+order.cor <- order(job.level.cor$Correlation, decreasing = T)
+job.level.cor <- job.level.cor[order.cor,]
+row.names(job.level.cor) <- 1:nrow(job.level.cor )
+job.level.cor
+
+plot(JobLevel ~ MonthlyIncome, data = income.df)
+plot(JobLevel ~ TotalWorkingYears, data = income.df)
+
+working.years.cor <- as.data.frame(cor(cont.income)["TotalWorkingYears",])
+names(working.years.cor) <- "Correlation"
+working.years.cor <- data.frame(Variable=row.names(working.years.cor), Correlation = working.years.cor)
+head(working.years.cor)
+order.cor <- order(working.years.cor$Correlation, decreasing = T)
+working.years.cor <- working.years.cor[order.cor,]
+row.names(working.years.cor) <- 1:nrow(working.years.cor )
+working.years.cor
+
+plot(TotalWorkingYears ~ MonthlyIncome, data = income.df)
+plot(TotalWorkingYears ~ Age, data = income.df)
+plot(TotalWorkingYears ~ YearsAtCompany, data = income.df)
+
+years.company.cor <- as.data.frame(cor(cont.income)["YearsAtCompany",])
+names(years.company.cor) <- "Correlation"
+years.company.cor <- data.frame(Variable=row.names(years.company.cor), Correlation = years.company.cor)
+head(years.company.cor)
+order.cor <- order(years.company.cor$Correlation, decreasing = T)
+years.company.cor <- years.company.cor[order.cor,]
+row.names(years.company.cor) <- 1:nrow(years.company.cor)
+years.company.cor
+
+plot(YearsAtCompany ~ YearsInCurrentRole, data = income.df)
+plot(YearsAtCompany ~ YearsWithCurrManager, data = income.df)
+plot(YearsAtCompany ~ YearsSinceLastPromotion, data = income.df)
+plot(YearsAtCompany ~ TotalWorkingYears, data = income.df)
+
+performance.cor <- as.data.frame(cor(cont.income)["PerformanceRating",])
+names(performance.cor) <- "Correlation"
+performance.cor <- data.frame(Variable=row.names(performance.cor), Correlation = performance.cor)
+head(performance.cor)
+order.cor <- order(performance.cor$Correlation, decreasing = T)
+performance.cor <- performance.cor[order.cor,]
+row.names(performance.cor) <- 1:nrow(performance.cor)
+performance.cor
+
+plot(PerformanceRating ~ PercentSalaryHike, data = income.df)
+
+```
+
+job level highly correlated with monthly income and moderately correlated with Total Working Year and Years at Company
+##lets remove job level for the model
+```{r}
+income.df$JobLevel = NULL
+
+str(income.df)
+```
+
+which variables are the most important using entire dataset for glm model?
+```{r}
+
+logic.fit.full <- glm(Attrition ~ ., data = income.df, family = binomial(link="logit"))
+summary(logic.fit.full)
+residualPlot(logic.fit.full)
+influenceIndexPlot(logic.fit.full)
+influencePlot(logic.fit.full)
+
+```
+Lets check for influential outliers and remove them if they exist and compare to full model
+```{r}
+
+logic.fit.full.no.out <- update(logic.fit.full, subset = c(-363, -376, -485, -510, -830, -860))
+compareCoefs(logic.fit.full, logic.fit.full.no.out)
+summary(logic.fit.full.no.out)
+
+View(income.df[c(363, 376, 485, 510, 830, 860),])
+```
+
+Which variables are most important to our full model?
+```{r}
+full.variable.imp <- varImp(logic.fit.full)
+names(full.variable.imp) <- "Importance"
+full.variable.imp$Variable <- row.names(full.variable.imp)
+full.variable.imp <- full.variable.imp[order(full.variable.imp$Importance, decreasing = T),]
+row.names(full.variable.imp) <- 1:nrow(full.variable.imp)
+full.variable.imp <- full.variable.imp[,c(2,1)]
+full.variable.imp
+```
+
+lets use only the statistically significant variables and build a reduced model
+```{r}
+logic.fit.reduced <- glm(Attrition ~ BusinessTravel + DistanceFromHome + EnvironmentSatisfaction + JobInvolvement + 
+                           JobRole + JobSatisfaction + MaritalStatus + NumCompaniesWorked + OverTime + RelationshipSatisfaction +
+                           TotalWorkingYears + TrainingTimesLastYear + WorkLifeBalance + YearsInCurrentRole + YearsSinceLastPromotion + YearsWithCurrManager,
+                         data = income.df, family = binomial(link = "logit"))
+summary(logic.fit.reduced)
+residualPlot(logic.fit.reduced)
+
+logic.fit.reduced2 <- glm(Attrition ~ BusinessTravel + DistanceFromHome + EnvironmentSatisfaction + JobInvolvement + 
+                           JobSatisfaction + MaritalStatus + NumCompaniesWorked + OverTime + RelationshipSatisfaction +
+                           TotalWorkingYears + TrainingTimesLastYear + WorkLifeBalance + YearsSinceLastPromotion,
+                         data = income.df, family = binomial(link = "logit"))
+summary(logic.fit.reduced2)
+residualPlot(logic.fit.reduced2)
+influenceIndexPlot(logic.fit.reduced2)
+influencePlot(logic.fit.reduced2)
+```
+once again, lets take a look at influential outliers and compare a outlier-less model to the oulier-included model
+```{r}
+View(income.df[c(233,363,485,645),])
+
+logic.fit.reduced.no.out <- update(logic.fit.reduced2, subset = c(-233, -363, -485, -645))
+compareCoefs(logic.fit.reduced2, logic.fit.reduced.no.out)
+summary(logic.fit.full.no.out)
+```
+
+lets take a look at the most important variables in our reduced model
+```{r}
+reduced.variable.imp2 <- varImp(logic.fit.reduced2)
+names(reduced.variable.imp2) <- "Importance"
+reduced.variable.imp2$Variable <- row.names(reduced.variable.imp2)
+reduced.variable.imp2 <- reduced.variable.imp2[order(reduced.variable.imp2$Importance, decreasing = T),]
+row.names(reduced.variable.imp2) <- 1:nrow(reduced.variable.imp2)
+reduced.variable.imp2 <- reduced.variable.imp2[,c(2,1)]
+reduced.variable.imp2
+```
+
+# LETS TEST OUR MODELS WITH CROSS VALIDATION
+Building test and training datasets
+```{r}
+income.no.attrition <- income.df[income.df$Attrition == "No",]
+income.yes.attrition <- income.df[income.df$Attrition == "Yes",]
+
+set.seed(1234)
+index.no <- sample(1:nrow(income.no.attrition), size = nrow(income.no.attrition) * 0.7)
+index.yes <- sample(1:nrow(income.yes.attrition), size = nrow(income.yes.attrition) * 0.7)
+
+test.no.attrition <- income.no.attrition[-index.no,]
+train.no.attrition <- income.no.attrition[index.no,]
+
+test.yes.attrition <- income.yes.attrition[-index.yes,]
+train.yes.attrition <- income.yes.attrition[index.yes,]
+
+nrow(test.no.attrition) + nrow(train.no.attrition)
+nrow(income.no.attrition)
+
+nrow(test.yes.attrition) + nrow(train.yes.attrition)
+nrow(income.yes.attrition)
+
+test.income <- rbind(test.no.attrition, test.yes.attrition)
+train.income <- rbind(train.no.attrition, train.yes.attrition)  
+```
+
+logistic regression full
+```{r}
+lr.model.full <- glm(Attrition ~ ., data = train.income, family = binomial(link="logit"))
+summary(lr.model.full)
+residualPlot(lr.model.full)
+influenceIndexPlot(lr.model.full)
+influencePlot(lr.model.full)
+
+lr.full.variable.imp <- varImp(lr.model.full)
+names(lr.full.variable.imp) <- "Importance"
+lr.full.variable.imp$Variable <- row.names(lr.full.variable.imp)
+lr.full.variable.imp <- lr.full.variable.imp[order(lr.full.variable.imp$Importance, decreasing = T),]
+row.names(lr.full.variable.imp) <- 1:nrow(lr.full.variable.imp)
+lr.full.variable.imp <- lr.full.variable.imp[,c(2,1)]
+lr.full.variable.imp
+```
+
+logistic regression reduced
+```{r}
+lr.model.reduced <- glm(Attrition ~ BusinessTravel + DistanceFromHome + EnvironmentSatisfaction + JobInvolvement + 
+                            JobSatisfaction + MaritalStatus + NumCompaniesWorked + OverTime + RelationshipSatisfaction +
+                            TotalWorkingYears + TrainingTimesLastYear + YearsSinceLastPromotion,
+                          data = train.income, family = binomial(link = "logit"))
+summary(lr.model.reduced)
+par(mfrow = c(1,1))
+residualPlot(lr.model.reduced)
+influenceIndexPlot(lr.model.reduced)
+influencePlot(lr.model.reduced)
+
+lr.reduced.variable.imp <- varImp(lr.model.reduced)
+names(lr.reduced.variable.imp) <- "Importance"
+lr.reduced.variable.imp$Variable <- row.names(lr.reduced.variable.imp)
+lr.reduced.variable.imp <- lr.reduced.variable.imp[order(lr.reduced.variable.imp$Importance, decreasing = T),]
+row.names(lr.reduced.variable.imp) <- 1:nrow(lr.reduced.variable.imp)
+lr.reduced.variable.imp <- lr.reduced.variable.imp[,c(2,1)]
+lr.reduced.variable.imp
+```
+
+checking model performance
+```{r}
+predict.full <- predict(lr.model.full, newdata = test.income)
+predict.reduced <- predict(lr.model.reduced, newdata = test.income)
+
+train.income %>% ggplot(aes(Attrition)) + geom_bar(stat = "Count")
+prop.train <- ddply(train.income, "Attrition", summarize, length(Attrition))
+prop.train
+prop.train[2,2] / prop.train[1, 2]
+
+test.income %>% ggplot(aes(Attrition)) + geom_bar(stat = "Count")
+prop.test <- ddply(test.income, "Attrition", summarize, length(Attrition))
+prop.test
+prop.test[2,2] / prop.test[1, 2]
+
+predictions.full <- ifelse(predict.full > 0.5, "Yes", "No")
+predictions.reduced <- ifelse(predict.reduced > 0.5, "Yes", "No")
+actuals <- test.income$Attrition
+
+conf.mat.full <- table(actuals, predictions.full)
+conf.mat.reduced <- table(actuals, predictions.reduced)
+confusionMatrix(conf.mat.full)
+confusionMatrix(conf.mat.reduced)
+```
+
+reclassifying our response variable in the model predictioni and cutting with different proportions
+```{r}
+predict.full.class <- predict(lr.model.full, newdata = test.income, type = "response")
+predict.reduced.class <- predict(lr.model.reduced, newdata = test.income, type = "response")
+predictions.full.class <- ifelse(predict.full.class > 0.5, "Yes", "No")
+predictions.reduced.class <- ifelse(predict.reduced.class > 0.5, "Yes", "No" )
+
+predictions.full.cut <- ifelse(predict.full.class > (1 - 0.1917808), "Yes", "No")
+predictions.reduced.cut <- ifelse(predict.reduced.class > (1 - 0.1917808), "Yes", "No" )
+
+conf.mat.full.class <- table(actuals, predictions.full.class)
+conf.mat.reduced.class <- table(actuals, predictions.reduced.class)
+
+conf.mat.full.cut <- table(actuals, predictions.full.cut)
+conf.mat.reduced.cut <- table(actuals, predictions.reduced.cut)
+
+confusionMatrix(conf.mat.full.class)
+confusionMatrix(conf.mat.reduced.class)
+
+confusionMatrix(conf.mat.full.cut)
+confusionMatrix(conf.mat.reduced.cut)
+
+lr.pred.full <- prediction(predict.full, test.income$Attrition)
+lr.perf.full <- performance(lr.pred.full, measure = "tpr", x.measure = "fpr")
+plot(lr.perf.full, col = rainbow(7), main = "ROC Curve Attrition Full Model", xlab = "Specificiy", ylab = "Sensitivity")
+abline(0,1)
+auc <- performance(lr.pred.full, "auc")
+auc.value <- auc@y.values
+text(x = .40, y = .6,paste("AUC = ", round(as.numeric(auc.value[[1]]),3), sep = ""))
+
+lr.pred.reduced <- prediction(predict.reduced, test.income$Attrition)
+lr.perf.reduced <- performance(lr.pred.reduced, measure = "tpr", x.measure = "fpr")
+plot(lr.perf.reduced, col = rainbow(7), main = "ROC Curve Attrition Reduced Model", xlab = "Specificiy", ylab = "Sensitivity")
+abline(0,1)
+auc <- performance(lr.pred.reduced, "auc")
+auc.value <- auc@y.values
+text(x = .40, y = .6,paste("AUC = ", round(as.numeric(auc.value[[1]]),3), sep = ""))
+
+lr.pred.full.class <- prediction(predict.full.class, test.income$Attrition)
+lr.perf.full.class <- performance(lr.pred.full.class, measure = "tpr", x.measure = "fpr")
+plot(lr.perf.full.class, col = rainbow(7), main = "ROC Curve Attrition Full Model", xlab = "Specificiy", ylab = "Sensitivity")
+abline(0,1)
+auc <- performance(lr.pred.full.class, "auc")
+auc.value <- auc@y.values
+text(x = .40, y = .6,paste("AUC = ", round(as.numeric(auc.value[[1]]),3), sep = ""))
+
+lr.pred.reduced.class <- prediction(predict.reduced.class, test.income$Attrition)
+lr.perf.reduced.class <- performance(lr.pred.reduced.class, measure = "tpr", x.measure = "fpr")
+plot(lr.perf.reduced.class, col = rainbow(7), main = "ROC Curve Attrition Reduced Model", xlab = "Specificiy", ylab = "Sensitivity")
+abline(0,1)
+auc <- performance(lr.pred.reduced.class, "auc")
+auc.value <- auc@y.values
+text(x = .40, y = .6,paste("AUC = ", round(as.numeric(auc.value[[1]]),3), sep = ""))
+```
+
+naive bayes
+```{r}
+nb.model.full <- naiveBayes(Attrition ~ ., data = train.income)
+nb.pred.full <- predict(nb.model.full, newdata = test.income[,names(test.income) != "Attrition"])
+predictions <- nb.pred.full
+table(predictions, actuals)
+confusionMatrix(table(predictions, actuals))
+pred <- prediction(as.integer(nb.pred.full), as.integer(test.income$Attrition))
+perf <- performance(pred, measure = "tpr", x.measure = "fpr")
+plot(perf, col = rainbow(7), main = "ROC Curve Attrition", xlab = "Specificity", ylab = "Sensitivity")
+abline(0,1)
+auc <- performance(pred, "auc")
+auc.value <- auc@y.values
+text(x = .40, y = .6,paste("AUC = ", round(as.numeric(auc.value[[1]]),3), sep = ""))
+```
+
+SVM
+```{r}
+svm.model <- svm(Attrition ~ ., data = train.income)
+svm.pred <- predict(svm.model, newdata = test.income[,names(test.income) != "Attrition"])
+table(svm.pred, test.income$Attrition)
+confusionMatrix(table(svm.pred, test.income$Attrition))
+pred <- prediction(as.integer(svm.pred), as.integer(test.income$Attrition))
+perf <- performance(pred, measure = "tpr", x.measure = "fpr")
+plot(perf, col = rainbow(7), main = "ROC Curve Attrition", xlab = "Specificity", ylab = "Sensitivity")
+abline(0,1)
+auc <- performance(pred, "auc")
+auc.value <- auc@y.values
+text(x = .40, y = .6,paste("AUC = ", round(as.numeric(auc.value[[1]]),3), sep = ""))
+```
+
+Random Forest
+```{r}
+rf.model <- randomForest(Attrition ~ .,data=train.income,mtry=4,ntree=500,importance=T)
+rf.pred <- predict(rf.model, newdata = test.income[,names(test.income) != "Attrition"])
+table(rf.pred, test.income$Attrition)
+confusionMatrix(table(rf.pred, test.income$Attrition))
+pred <- prediction(as.integer(rf.pred), as.integer(test.income$Attrition))
+perf <- performance(pred, measure = "tpr", x.measure = "fpr")
+plot(perf, col = rainbow(7), main = "ROC Curve Attrition", xlab = "Specificity", ylab = "Sensitivity")
+abline(0,1)
+auc <- performance(pred, "auc")
+auc.value <- auc@y.values
+text(x = .40, y = .6,paste("AUC = ", round(as.numeric(auc.value[[1]]),3), sep = ""))
+```
+
+# Best model fit attrition data
+our best model was the reduced logistic regression model
+```{r}
+str(no.attrition.df)
+str(income.df)
+lr.model.reduced <- glm(Attrition ~ BusinessTravel + DistanceFromHome + EnvironmentSatisfaction + JobInvolvement + 
+                          JobSatisfaction + MaritalStatus + NumCompaniesWorked + OverTime + RelationshipSatisfaction +
+                          TotalWorkingYears + TrainingTimesLastYear + YearsSinceLastPromotion,
+                        data = income.df, family = binomial(link = "logit"))
+
+predict.reduced <- predict(lr.model.reduced, newdata = no.attrition.df, type = "response")
+predictions.cut <- ifelse(predict.reduced > (1 - 0.1917808), "Yes", "No" )
+no.attrition.pred.df <- data.frame(ID = no.attrition.df$ID, Prediction = predictions.cut)
+write.csv(no.attrition.pred.df, " Case2PredictionsBrewer Attrition.csv", row.names = F)
+```
+
+
+linear regression predicting salary
+```{r}
+str(income.df)
+lm.model.full <- lm(MonthlyIncome ~ ., data = income.df)
+summary(lm.model.full)
+RSS <- c(crossprod(lm.model.full$residuals))
+MSE <- RSS / length(lm.model.full$residuals)
+RMSE <- sqrt(MSE)
+RMSE
+```
+
+
+linear regression reduced
+```{r}
+lm.model.reduced <- lm(MonthlyIncome ~ BusinessTravel + JobRole + PerformanceRating + TotalWorkingYears + YearsAtCompany + YearsWithCurrManager, 
+                       data = income.df)
+summary(lm.model.reduced)
+RSS <- c(crossprod(lm.model.reduced$residuals))
+MSE <- RSS / length(lm.model.reduced$residuals)
+RMSE <- sqrt(MSE)
+RMSE
+```
+
+trianing the full linear model
+```{r}
+lm.train.full <- lm(MonthlyIncome ~ ., data = train.income)
+summary(lm.train.full)
+lm.pred.full <- predict(lm.train.full, newdata = test.income[,names(test.income) != "MonthlyIncome"])
+actuals <- test.income$MonthlyIncome
+predictions <- lm.pred.full
+RMSE <- sqrt(mean((actuals - predictions)^2))
+RMSE
+```
+
+training the reduced model
+```{r}
+lm.train.reduced <- lm(MonthlyIncome ~ BusinessTravel + JobRole + PerformanceRating + TotalWorkingYears + YearsAtCompany + YearsWithCurrManager, 
+                       data = train.income)
+summary(lm.model.reduced)
+lm.pred.reduced <- predict(lm.train.reduced, newdata = test.income[,names(test.income) != "MonthlyIncome"])
+actuals <- test.income$MonthlyIncome
+predictions <- lm.pred.reduced
+RMSE <- sqrt(mean((actuals - predictions)^2))
+RMSE
+```
+
+selecting best model by RMSE and using entire dataset
+```{r}
+str(no.salary.df)
+lm.model.reduced <- lm(MonthlyIncome ~ BusinessTravel + JobRole + PerformanceRating + TotalWorkingYears + YearsAtCompany + YearsWithCurrManager, 
+                       data = income.df)
+lm.pred.salary <- predict(lm.model.reduced, newdata = no.salary.df)
+no.salary.pred.df <- data.frame(ID = no.salary.df$ID, Prediction = lm.pred.salary)
+write.csv(no.salary.pred.df, "Case2PredictionsBrewer Salary.csv")
+```
+
